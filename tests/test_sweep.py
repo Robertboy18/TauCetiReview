@@ -365,7 +365,7 @@ def test_count_evictions_ignores_our_own_reservation_removals():
 
 
 def _request(head, author="tauceti-review-bot[bot]"):
-    return {"author": author, "body": f"Recovery requested.\n\n<!--tauceti-rebase:v1 {head}-->"}
+    return {"author": author, "body": f"Merge-queue recovery for head `{head[:7]}`.\n\n<!--tauceti-rebase:v1 {head}-->"}
 
 
 def test_handoff_trust_and_head_binding():
@@ -390,7 +390,7 @@ def test_fork_handoff_retries_label_without_reposting_and_stops_at_head():
 
     with patch.object(sweep, "DRY_RUN", False), patch.object(sweep, "gh", gh), \
             patch.object(sweep, "update_branch", side_effect=AssertionError("fork update attempted")):
-        assert not sweep.recover_branch(1, head, True, [], comments)
+        assert not sweep.recover_branch(1, head, True, comments)
         assert len(comments) == 1
         label_fails = False
         assert sweep.reconcile_rebase_request(1, head, [], comments) == "waiting"
@@ -417,7 +417,7 @@ def test_handoff_new_head_cleanup_and_races():
         gh.assert_not_called()
         with patch.object(sweep, "DRY_RUN", True):
             assert sweep.reconcile_rebase_request(1, head, labels, [_request(old)]) == "ready"
-            assert sweep.recover_branch(1, head, True, [], [])
+            assert sweep.recover_branch(1, head, True, [])
             gh.assert_not_called()
 
 
@@ -480,21 +480,40 @@ def test_main_hands_off_once_then_waits_until_push():
         gate.assert_called_once()
 
 
+def test_up_to_date_eviction_waits_for_human_without_worker_request():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    head, comments = "a" * 40, []
+
+    def gh(args):
+        if args[:2] == ["pr", "comment"]:
+            comments.append({"author": "tauceti-review-bot[bot]", "body": args[-1]})
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with patch.object(sweep, "DRY_RUN", False), patch.object(sweep, "gh", gh):
+        assert sweep.flag(1, head, comments, worker=False)
+        assert not sweep.rebase_request_heads(comments)
+        assert sweep.rebase_request_heads(comments, stalled=True) == {head}
+        assert sweep.reconcile_rebase_request(1, head, [], comments) == "waiting"
+        assert len(comments) == 1
+        assert not sweep.rebase_request_heads(comments)  # label repair must not upgrade to worker work
+
+
 def test_same_repo_updates_keep_real_errors_visible():
     from unittest.mock import patch
     with patch.object(sweep, "update_branch", return_value="updated") as update, \
             patch.object(sweep, "flag", return_value=True) as flag:
-        assert sweep.recover_branch(1, "a" * 40, False, [], [])
+        assert sweep.recover_branch(1, "a" * 40, False, [])
         update.assert_called_once()
         flag.assert_not_called()
         update.return_value = "error"
-        assert not sweep.recover_branch(1, "a" * 40, False, [], [])
+        assert not sweep.recover_branch(1, "a" * 40, False, [])
         flag.assert_not_called()
         update.return_value = "conflict"
-        assert sweep.recover_branch(1, "a" * 40, False, [], [])
+        assert sweep.recover_branch(1, "a" * 40, False, [])
         flag.assert_called_once()
         update.reset_mock()
-        assert not sweep.recover_branch(1, "a" * 40, None, [], [])
+        assert not sweep.recover_branch(1, "a" * 40, None, [])
         update.assert_not_called()
 
 

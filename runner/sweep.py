@@ -72,21 +72,29 @@ KEEP_LABELS = {"keep", "hold", "wip", "human", "do-not-close"}
 NEEDS_REBASE_LABEL = "needs-rebase"
 EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
 REBASE_MARKER_RE = re.compile(r"^<!--tauceti-rebase:v1 ([0-9a-f]{40})-->$", re.M)
+STALLED_MARKER_RE = re.compile(r"^<!--tauceti-merge-stalled:v1 ([0-9a-f]{40})-->$", re.M)
+STALLED_COMMENT = (
+    "Merge-queue recovery for head `{sha}`: repeated queue evictions, but this branch already "
+    "includes current `main`. A maintainer needs to inspect the merge-group failure; no worker "
+    "rebase is requested. The sweep will wait at this head. Add `keep` to pause recovery.\n\n"
+    "<!--tauceti-merge-stalled:v1 {head}-->")
 REBASE_COMMENT = (
     "Merge-queue recovery for head `{sha}`: {reason} "
-    "The worker tending this PR should merge current `main`, reconcile overlapping declarations, "
+    "The author or their worker should merge current `main`, reconcile overlapping declarations, "
     "and push only after the build and axiom checks pass. This request uses the worker's existing "
-    "per-PR rebase-attempt budget; it does not reset that budget. The sweep will wait on this head "
+    "per-PR rebase-attempt budget; exhaustion requires human attention. The sweep will wait on this head "
     "instead of retrying the same operation. A new head returns to normal CI and review. "
     "Workers predating this handoff support need a TauCetiWorker update and restart. "
+    "The fork push credential must permit workflow changes inherited from main. "
     "Add `keep` to pause recovery.\n\n<!--tauceti-rebase:v1 {head}-->")
 
 
-def rebase_request_heads(comments):
+def rebase_request_heads(comments, *, stalled=False):
     """Only the sweep App can issue a head-bound handoff to contributor workers."""
-    actor = RESERVATION_ACTOR.removesuffix("[bot]") + "[bot]"
-    return {head for c in comments if c.get("author") == actor
-            for head in REBASE_MARKER_RE.findall(c.get("body") or "")}
+    marker = STALLED_MARKER_RE if stalled else REBASE_MARKER_RE
+    return {head for c in comments if c.get("author") == "tauceti-review-bot[bot]"
+            and (c.get("body") or "").startswith("Merge-queue recovery for head `")
+            for head in marker.findall(c.get("body") or "")}
 
 
 
@@ -458,21 +466,23 @@ def update_branch(pr, head):
     return verdict
 
 
-def flag(pr, head, labels, comments, *, reason="This head needs reconciliation against main after repeated queue evictions."):
+def flag(pr, head, comments, *, worker=True, reason="This head needs reconciliation against main after repeated queue evictions."):
     """Publish a head-bound handoff before labelling it, repairing partial failures on retry."""
     if DRY_RUN:
-        print(f"[dry-run] would hand off #{pr} ({head[:7]}) to its worker: {reason}")
+        action = "request worker reconciliation" if worker else "request human diagnosis (already up to date)"
+        print(f"[dry-run] would {action} for #{pr} ({head[:7]}): {reason}")
         return True
-    if head not in rebase_request_heads(comments):
+    if head not in rebase_request_heads(comments, stalled=not worker):
+        template = REBASE_COMMENT if worker else STALLED_COMMENT
         c = gh(["pr", "comment", str(pr), "--repo", REPO, "--body",
-                REBASE_COMMENT.format(sha=head[:7], head=head, reason=reason)])
+                template.format(sha=head[:7], head=head, reason=reason)])
         if c.returncode != 0:
             print(f"#{pr}: handoff comment failed: {c.stderr.strip()}", file=sys.stderr)
             return False
     r = gh(["pr", "edit", str(pr), "--repo", REPO, "--add-label", NEEDS_REBASE_LABEL])
     if r.returncode != 0:
         gh(["label", "create", NEEDS_REBASE_LABEL, "--repo", REPO, "--force", "--color", "D93F0B",
-            "--description", "Needs branch reconciliation by the worker tending this PR"])
+            "--description", "Merge recovery requested; use keep to pause"])
         r = gh(["pr", "edit", str(pr), "--repo", REPO, "--add-label", NEEDS_REBASE_LABEL])
     if r.returncode != 0:
         print(f"#{pr}: handoff label failed: {r.stderr.strip()}", file=sys.stderr)
@@ -487,12 +497,14 @@ def reconcile_rebase_request(pr, head, labels, comments):
     Returns waiting / ready / error. No recorded request means a human/legacy label
     that this helper must not remove.
     """
-    requested = rebase_request_heads(comments)
-    labelled = NEEDS_REBASE_LABEL in {l.get("name") for l in labels}
+    worker_heads = rebase_request_heads(comments)
+    requested = worker_heads | rebase_request_heads(comments, stalled=True)
+    labelled = NEEDS_REBASE_LABEL in {(l.get("name") or "").lower() for l in labels}
     if head in requested:
-        if not labelled and not flag(pr, head, labels, comments):
+        if not labelled and not flag(pr, head, comments, worker=head in worker_heads):
             return "error"
-        print(f"#{pr}: waiting for its worker to reconcile head {head[:7]}")
+        actor = "its worker to reconcile" if head in worker_heads else "human diagnosis of"
+        print(f"#{pr}: waiting for {actor} head {head[:7]}")
         return "waiting"
     if labelled and requested:
         if DRY_RUN:
@@ -506,10 +518,10 @@ def reconcile_rebase_request(pr, head, labels, comments):
     return "ready"
 
 
-def recover_branch(pr, head, is_fork, labels, comments):
+def recover_branch(pr, head, is_fork, comments):
     """The upstream installation cannot write a fork; its own worker has that access."""
     if is_fork is True:
-        return flag(pr, head, labels, comments, reason=(
+        return flag(pr, head, comments, reason=(
             "The upstream App cannot update this contributor-owned fork. "
             "This is an access boundary, not evidence of a merge conflict."))
     if is_fork is not False:
@@ -517,7 +529,7 @@ def recover_branch(pr, head, is_fork, labels, comments):
         return False
     res = update_branch(pr, head)
     if res == "conflict":
-        return flag(pr, head, labels, comments, reason="Updating this branch onto main hit a merge conflict.")
+        return flag(pr, head, comments, reason="Updating this branch onto main hit a merge conflict.")
     return res != "error"
 
 
@@ -619,10 +631,9 @@ def main():
         if action == "enqueue":
             failures += not enqueue(n, v["id"], head)
         elif action == "update_branch":
-            failures += not recover_branch(n, head, v.get("isCrossRepository"),
-                                           v.get("labels") or [], comments)
+            failures += not recover_branch(n, head, v.get("isCrossRepository"), comments)
         elif action == "flag":
-            failures += not flag(n, head, v.get("labels") or [], comments)
+            failures += not flag(n, head, comments, worker=False)
 
     if failures:
         print(f"merge-sweep: {failures} action(s) failed", file=sys.stderr)
