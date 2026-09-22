@@ -6,6 +6,7 @@ the trusted operator-run worker and from ad hoc command-line runs. `tauceti-revi
 person run the same review on their **own Claude / Codex / Kiro subscription**: the inference runs
 through the locally logged-in provider CLI, so there is no per-token bill. It is the same engine,
 same rubrics, same scoreboard and per-rubric threads — only the inference auth and who posts change.
+Claude can also use **Amazon Bedrock**, billed to your AWS account; see below.
 
 This is for people the project already trusts (maintainers, regular contributors). The tool is
 read-only and posts under *your* GitHub identity, but nothing stops a reviewer from rubber-stamping
@@ -79,6 +80,28 @@ Add `--post` to publish. Useful flags:
 | `--repo owner/name` | review a different repo (default `TauCetiProject/TauCeti`) |
 | `--auth api` | use the matching `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `KIRO_API_KEY` instead of a browser login |
 | `--keep` | keep the temporary workspace for inspection |
+
+### Amazon Bedrock
+
+With Claude Code installed and an AWS profile that can invoke the pinned Opus reviewer:
+
+```bash
+export CLAUDE_CODE_USE_BEDROCK=1
+export AWS_PROFILE=tauceti
+export AWS_REGION=us-east-1
+export ANTHROPIC_DEFAULT_OPUS_MODEL='us.anthropic.claude-opus-5[1m]'
+tauceti-review 42 --reviewer claude --post
+```
+
+Use the region and inference profile available to your AWS account. No Claude subscription login
+is needed: `CLAUDE_CODE_USE_BEDROCK=1` selects AWS credentials even with the default
+`--auth subscription`. Inference is billed to AWS.
+
+The isolated reviewer receives an explicit allowlist of AWS authentication and Claude model-routing
+settings. Shared AWS config and credential paths are resolved before `HOME` changes; explicit
+`AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` paths are respected. This supports profiles
+that obtain and refresh credentials from an EC2 instance role. Personal Claude settings, skills,
+subscription tokens, GitHub credentials, and other providers' keys are not inherited.
 
 ## What it does
 

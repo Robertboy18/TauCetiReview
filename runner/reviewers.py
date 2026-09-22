@@ -120,6 +120,35 @@ def reject_retired_opus(model):
         raise ValueError("Claude Opus 4.8 is retired; use the exact claude-opus-5 model")
 
 
+def _bedrock_env():
+    """Keep Claude's AWS credential chain reachable after moving HOME.
+
+    Carry only Bedrock routing/auth settings, never the operator's Claude config,
+    subscription tokens, GitHub credentials, or another model provider's key.
+    Explicit config paths also let EC2 role profiles refresh during long runs.
+    """
+    names = (
+        "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE", "AWS_DEFAULT_PROFILE",
+        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ROLE_ARN", "AWS_ROLE_SESSION_NAME",
+        "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_EFFORT_LEVEL",
+    )
+    env = {name: os.environ[name] for name in names if os.environ.get(name)}
+    env["CLAUDE_CODE_USE_BEDROCK"] = "1"
+    for name, default in (
+        ("AWS_CONFIG_FILE", "~/.aws/config"),
+        ("AWS_SHARED_CREDENTIALS_FILE", "~/.aws/credentials"),
+    ):
+        path = os.path.abspath(os.path.expanduser(os.environ.get(name) or default))
+        if os.environ.get(name) or os.path.isfile(path):
+            env[name] = path
+    return env
+
+
 
 def reviewer_env(provider, keys, subscription=False):
     """A minimal, isolated environment for a reviewer subprocess. Returns `(env, home)`; the caller
@@ -153,7 +182,9 @@ def reviewer_env(provider, keys, subscription=False):
     if user:
         env.update(USER=user, LOGNAME=os.environ.get("LOGNAME") or user)
     if provider in ("claude", "sonnet"):
-        if subscription:
+        if os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1":
+            env.update(_bedrock_env())
+        elif subscription:
             # Seed only the OAuth credential into the clean HOME; no personal CLAUDE.md/skills.
             src = os.path.expanduser("~/.claude/.credentials.json")
             if os.path.exists(src):
