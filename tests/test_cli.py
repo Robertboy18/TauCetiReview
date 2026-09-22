@@ -7,6 +7,7 @@ import types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "runner"))
 import cli  # noqa: E402
+import reviewers  # noqa: E402
 
 
 def test_pr_ref_oids_uses_old_gh_compatible_rest_fields():
@@ -34,6 +35,56 @@ def test_pr_ref_oids_uses_old_gh_compatible_rest_fields():
 def test_pr_ref_lookup_does_not_require_new_pr_view_field():
     source = pathlib.Path(cli.__file__).read_text()
     assert '"headRefOid,baseRefOid"' not in source
+
+
+def test_build_status_context_reaches_the_trusted_prompt():
+    # The actual shape returned for TauCeti PR #8073, whose sandboxed build and
+    # workflow-pinned audits passed. There is no CheckRun.name/conclusion here.
+    meta = {
+        "headRefOid": "reviewed-head",
+        "statusCheckRollup": [
+            {"__typename": "StatusContext", "context": "build", "state": "SUCCESS"},
+        ],
+    }
+    status = cli.ci_build_status(meta, "reviewed-head")
+    assert status == "success"
+    assert "passed `lake build` and the axiom audit" in reviewers.ci_status_block(
+        status, "reviewed-head"
+    )
+
+
+def test_check_run_build_is_still_recognized():
+    meta = {
+        "headRefOid": "reviewed-head",
+        "statusCheckRollup": [
+            {"__typename": "CheckRun", "name": "build", "conclusion": "SUCCESS"},
+        ],
+    }
+    assert cli.ci_build_status(meta, "reviewed-head") == "success"
+
+
+def test_build_hint_never_uses_another_head_or_unverified_success():
+    success = {"context": "build", "state": "SUCCESS"}
+    for meta in (
+        {"headRefOid": "newer-head", "statusCheckRollup": [success]},
+        {"statusCheckRollup": [success]},
+        {"headRefOid": "reviewed-head", "statusCheckRollup": None},
+        {"headRefOid": "reviewed-head", "statusCheckRollup": [
+            {"context": "scope", "state": "SUCCESS"}]},
+        {"headRefOid": "reviewed-head", "statusCheckRollup": [
+            {"context": "build", "state": "PENDING"}]},
+        {"headRefOid": "reviewed-head", "statusCheckRollup": [
+            {"context": "build", "state": "FAILURE"}]},
+        {"headRefOid": "reviewed-head", "statusCheckRollup": [
+            {"name": "build", "conclusion": "SKIPPED"}]},
+        {"headRefOid": "reviewed-head", "statusCheckRollup": [
+            success, {"name": "build", "conclusion": None, "status": "IN_PROGRESS"}]},
+        {"headRefOid": "reviewed-head", "statusCheckRollup": [
+            success, {"name": "build", "conclusion": "FAILURE"}]},
+    ):
+        status = cli.ci_build_status(meta, "reviewed-head")
+        assert status == "", meta
+        assert reviewers.ci_status_block(status, "reviewed-head") == "", meta
 
 
 if __name__ == "__main__":
