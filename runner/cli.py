@@ -159,9 +159,20 @@ def ci_build_status(meta, head):
     """
     if meta.get("headRefOid") != head:
         return ""
-    builds = [c for c in (meta.get("statusCheckRollup") or [])
-              if (c.get("name") or c.get("context")) == "build"]
-    statuses = [(c.get("conclusion") or c.get("state") or "").lower() for c in builds]
+    statuses = []
+    for c in (meta.get("statusCheckRollup") or []):
+        # Discriminate on `__typename`, the way review.yml and sweep.status_states do, so the
+        # two vocabularies never cross-read. Older `gh` that omits it falls back to the field
+        # shape; the two node types carry disjoint keys, so that stays unambiguous.
+        kind = c.get("__typename")
+        if kind == "StatusContext":
+            if c.get("context") == "build":
+                statuses.append((c.get("state") or "").lower())
+        elif kind == "CheckRun":
+            if c.get("name") == "build":
+                statuses.append((c.get("conclusion") or "").lower())
+        elif (c.get("name") or c.get("context")) == "build":
+            statuses.append((c.get("conclusion") or c.get("state") or "").lower())
     return "success" if statuses and all(s == "success" for s in statuses) else ""
 
 

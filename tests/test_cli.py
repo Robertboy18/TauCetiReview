@@ -63,6 +63,31 @@ def test_check_run_build_is_still_recognized():
     assert cli.ci_build_status(meta, "reviewed-head") == "success"
 
 
+def test_node_types_are_discriminated_by_typename():
+    # The two vocabularies must never cross-read: a StatusContext carries `state`, a
+    # CheckRun carries `conclusion`. Keying on `__typename` keeps that structural.
+    meta = {
+        "headRefOid": "reviewed-head",
+        "statusCheckRollup": [
+            {"__typename": "StatusContext", "context": "build", "state": "SUCCESS"},
+            {"__typename": "CheckRun", "name": "build", "conclusion": "SUCCESS"},
+        ],
+    }
+    assert cli.ci_build_status(meta, "reviewed-head") == "success"
+    # A CheckRun that has not concluded must not be read through the StatusContext branch.
+    meta["statusCheckRollup"][1] = {
+        "__typename": "CheckRun", "name": "build", "conclusion": None, "state": "SUCCESS",
+    }
+    assert cli.ci_build_status(meta, "reviewed-head") == ""
+    # StatusContext-only states that are not SUCCESS stay untrusted.
+    for state in ("ERROR", "EXPECTED", "PENDING"):
+        assert cli.ci_build_status({
+            "headRefOid": "reviewed-head",
+            "statusCheckRollup": [
+                {"__typename": "StatusContext", "context": "build", "state": state}],
+        }, "reviewed-head") == "", state
+
+
 def test_build_hint_never_uses_another_head_or_unverified_success():
     success = {"context": "build", "state": "SUCCESS"}
     for meta in (
