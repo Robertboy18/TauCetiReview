@@ -151,6 +151,31 @@ def gh_json(repo, pr, fields):
     return json.loads(r.stdout)
 
 
+def ci_build_status(meta, head):
+    """Assert a green build only for the reviewed head, across both GitHub status formats.
+
+    TauCeti's workflow-pinned audit posts a StatusContext, whereas older builds used a
+    CheckRun. A pending or conflicting build entry must not become a trusted success.
+    """
+    if meta.get("headRefOid") != head:
+        return ""
+    statuses = []
+    for c in (meta.get("statusCheckRollup") or []):
+        # Discriminate on `__typename`, the way review.yml and sweep.status_states do, so the
+        # two vocabularies never cross-read. Older `gh` that omits it falls back to the field
+        # shape; the two node types carry disjoint keys, so that stays unambiguous.
+        kind = c.get("__typename")
+        if kind == "StatusContext":
+            if c.get("context") == "build":
+                statuses.append((c.get("state") or "").lower())
+        elif kind == "CheckRun":
+            if c.get("name") == "build":
+                statuses.append((c.get("conclusion") or "").lower())
+        elif (c.get("name") or c.get("context")) == "build":
+            statuses.append((c.get("conclusion") or c.get("state") or "").lower())
+    return "success" if statuses and all(s == "success" for s in statuses) else ""
+
+
 def pr_ref_oids(repo, pr):
     """Return the PR's head and base tips without requiring newer `gh pr view` JSON fields.
 
@@ -615,8 +640,8 @@ def main():
     # just leaves it blank, and the engine then injects nothing).
     ci_build = ""
     try:
-        rollup = gh_json(a.repo, a.pr, "statusCheckRollup").get("statusCheckRollup") or []
-        ci_build = next((c.get("conclusion", "") for c in rollup if c.get("name") == "build"), "")
+        build_meta = gh_json(a.repo, a.pr, "headRefOid,statusCheckRollup")
+        ci_build = ci_build_status(build_meta, head)
     except Exception:
         ci_build = ""
     meta = gh_json(a.repo, a.pr, "title,body")
