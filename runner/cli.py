@@ -524,6 +524,11 @@ def main():
     if not a.kiro_model or a.kiro_model.lower().startswith("auto"):
         die(f"--kiro-model needs an exact model id, not Kiro Auto: {a.kiro_model!r}")
 
+    # A whitespace-only TAUCETI_CLAUDE_MODEL is easy to produce from a CI variable and is
+    # truthy, so normalise here rather than letting it reach the engine and fail as an
+    # unpriced model only after workspace setup and the Mathlib fetch.
+    a.claude_model = (a.claude_model or "").strip() or None
+
     # --sync-only: no review, just drain an existing store's outbox into TauCetiData and exit. The
     # host runs this after a --no-sync review (e.g. a bubble) to publish with its own creds. Loud:
     # `run` (no allow_fail) exits nonzero if archive.py sync fails after its retries.

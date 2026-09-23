@@ -54,7 +54,11 @@ def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
 
     cases = [
         ("", [], None),
+        # Whitespace-only is truthy and easy to produce from a CI variable; it must not reach
+        # the engine and fail there as an unpriced model.
+        ("   ", [], None),
         ("claude-fable-5-1", [], "claude-fable-5-1"),
+        ("", ["--claude-model", "  claude-fable-5-1  "], "claude-fable-5-1"),
         ("", ["--claude-model", "claude-fable-5-1"], "claude-fable-5-1"),
         ("claude-fable-5-1", ["--claude-model", "claude-opus-5"], "claude-opus-5"),
     ]
